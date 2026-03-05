@@ -347,13 +347,18 @@ textarea.input { resize: none; min-height: 60px; }
         </div>
 
         <!-- 일정 추가 -->
-        <div class="flex-gap2 items-center" style="margin-bottom:4px">
-          <div class="auto-date" id="autoDate"></div>
-          <input class="input" id="customDate" placeholder="날짜 변경 (예: 3/22)" style="width:110px">
-          <input class="input flex-1" id="scheduleWork" placeholder="작업 (예: 타일)" onkeydown="if(event.key==='Enter')addSchedule()">
-          <button class="btn btn-default" onclick="addSchedule()">추가</button>
+        <div style="margin-bottom:8px">
+          <div class="flex-gap2 items-center" style="margin-bottom:6px">
+            <span style="font-size:13px;color:#6b7280;">자동 날짜:</span>
+            <div class="auto-date" id="autoDate"></div>
+          </div>
+          <p class="hint" style="margin-bottom:6px">날짜를 바꾸려면 아래에 직접 입력하세요 (비우면 자동 날짜로 추가)</p>
+          <input class="input" id="customDate" placeholder="날짜 직접 입력 (예: 3/22)" style="margin-bottom:6px">
+          <div class="flex-gap2">
+            <input class="input flex-1" id="scheduleWork" placeholder="작업 (예: 타일)" onkeydown="if(event.key==='Enter')addSchedule()">
+            <button class="btn btn-default" onclick="addSchedule()">추가</button>
+          </div>
         </div>
-        <p class="hint">날짜 변경란 비우면 자동 날짜로 추가됩니다</p>
 
         <!-- 일정 목록 -->
         <div class="scroll-60" id="scheduleList">
