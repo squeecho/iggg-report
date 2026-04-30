@@ -237,6 +237,61 @@ body > * { position: relative; z-index: 2; }
   border-style: dashed;
   border-color: var(--line-soft);
 }
+
+/* type=date 전용 — 브라우저 기본 스타일 정규화 */
+.input-date {
+  font-family: var(--ff-mono);
+  letter-spacing: 0;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 38px;
+}
+.input-date::-webkit-date-and-time-value { text-align: left; }
+
+/* 캘린더 아이콘 - 다크모드 가시성 */
+.input-date::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity var(--dur-fast);
+}
+:root[data-theme="dark"] .input-date::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.85;
+}
+.input-date::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+/* 빈 상태일 때 input 위에 떠있는 안내 박스 */
+.input-date-wrap {
+  position: relative;
+}
+.input-date-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  background: var(--bg-input);
+  border-radius: var(--radius-md);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+  z-index: 1;
+}
+.input-date-hint__icon {
+  font-size: 1rem;
+  opacity: 0.7;
+}
+.input-date-hint__text {
+  font-family: var(--ff-body);
+  font-size: var(--fz-body);
+  color: var(--fg-mute);
+}
+/* 값이 들어가면 hint 숨김 */
+.input-date-wrap.has-value .input-date-hint {
+  opacity: 0;
+}
+
 textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
 
 /* ---- Layout helpers ---- */
@@ -453,11 +508,13 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
   background: var(--bg-input-focus);
 }
 .schedule-item-date {
-  width: 64px;
-  text-align: center;
+  width: 130px;
+  text-align: left;
   font-family: var(--ff-mono) !important;
   font-weight: 500;
   color: var(--fg) !important;
+  cursor: pointer;
+  padding: var(--sp-1) var(--sp-2) !important;
 }
 .schedule-item-day {
   font-family: var(--ff-mono);
@@ -722,8 +779,14 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
             <span class="auto-date-label">자동 날짜</span>
             <div class="auto-date" id="autoDate"></div>
           </div>
-          <p class="hint">날짜를 바꾸려면 아래에 직접 입력 (비우면 자동 날짜로 추가)</p>
-          <input class="input" id="customDate" placeholder="날짜 직접 입력 (예: 3/22)" style="margin-bottom:6px">
+          <p class="hint">날짜를 바꾸려면 아래에서 직접 선택 (비우면 자동 날짜로 추가)</p>
+          <div class="input-date-wrap" id="customDateWrap" style="margin-bottom:6px">
+            <input class="input input-date" id="customDate" type="date" onchange="syncCustomDate()">
+            <div class="input-date-hint" id="customDateHint">
+              <span class="input-date-hint__icon">📅</span>
+              <span class="input-date-hint__text">탭하여 달력에서 날짜 선택</span>
+            </div>
+          </div>
           <div class="flex-gap2">
             <input class="input flex-1" id="scheduleWork" placeholder="작업 (예: 타일)" onkeydown="if(event.key==='Enter')addSchedule()">
             <button class="btn btn-default" onclick="addSchedule()">추가</button>
@@ -975,16 +1038,44 @@ function addSchedule() {
   const work = document.getElementById('scheduleWork').value.trim()
   if (!work) return showToast('작업 내용을 입력해주세요.')
   if (!현장명) return showToast('현장을 먼저 선택해주세요.')
-  const customDate = document.getElementById('customDate').value.trim()
+  const customDateRaw = document.getElementById('customDate').value.trim()
+  // type=date는 YYYY-MM-DD 형식, M/D로 변환
+  const customDate = customDateRaw ? isoToMD(customDateRaw) : ''
   const 날짜 = customDate || getNextDate()
   남은일정.push({ 날짜, 작업: work })
   document.getElementById('scheduleWork').value = ''
   document.getElementById('customDate').value = ''
+  document.getElementById('customDateWrap')?.classList.remove('has-value')
   syncScheduleToSite()
   renderScheduleList()
   updateAutoDate()
   updateScheduleSubtitle()
   showToast('남은 일정이 추가되었습니다.')
+}
+
+// "2026-05-02" → "5/2"
+function isoToMD(iso) {
+  const parts = iso.split('-')
+  if (parts.length !== 3) return iso
+  return `${Number(parts[1])}/${Number(parts[2])}`
+}
+
+// "5/2" → "2026-05-02" (현재 연도 기준)
+function mdToIso(md) {
+  if (!md || !md.includes('/')) return ''
+  const [m, d] = md.split('/').map(Number)
+  if (!m || !d) return ''
+  const y = new Date().getFullYear()
+  return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
+}
+
+// 사용자가 picker 변경 시 — 안내 텍스트 토글
+function syncCustomDate() {
+  const wrap = document.getElementById('customDateWrap')
+  const input = document.getElementById('customDate')
+  if (!wrap || !input) return
+  if (input.value) wrap.classList.add('has-value')
+  else wrap.classList.remove('has-value')
 }
 function deleteSchedule(idx) {
   남은일정.splice(idx, 1)
@@ -995,10 +1086,13 @@ function deleteSchedule(idx) {
   showToast('일정이 삭제되었습니다.')
 }
 function editScheduleDate(idx, val) {
-  남은일정[idx].날짜 = val
+  // type=date에서 오는 값은 YYYY-MM-DD, 빈값일 수도 있음
+  if (!val) return
+  const md = isoToMD(val)
+  남은일정[idx].날짜 = md
   syncScheduleToSite()
   const dayEl = document.getElementById(`day-${idx}`)
-  if (dayEl) { try { dayEl.textContent = `(${get요일(val)})` } catch(e){} }
+  if (dayEl) { try { dayEl.textContent = `(${get요일(md)})` } catch(e){} }
 }
 function editScheduleWork(idx, val) {
   남은일정[idx].작업 = val
@@ -1012,8 +1106,8 @@ function renderScheduleList() {
   }
   el.innerHTML = 남은일정.map((item, i) => `
     <div class="schedule-item">
-      <input class="input schedule-item-date"
-        value="${item.날짜}"
+      <input class="input schedule-item-date" type="date"
+        value="${mdToIso(item.날짜)}"
         onchange="editScheduleDate(${i}, this.value)">
       <span id="day-${i}" class="schedule-item-day">(${get요일(item.날짜)})</span>
       <input class="input schedule-item-work"
