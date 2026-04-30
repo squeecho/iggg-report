@@ -726,9 +726,13 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
       <!-- 다음 작업 일정 -->
       <div>
         <label class="label">다음 작업 일정 <span class="label__sub">Next</span></label>
-        <div class="flex-gap2">
+        <div class="flex-gap2" style="flex-wrap:wrap">
           <button class="btn btn-default" id="tab-내일" onclick="setNextType('내일')">내일</button>
           <button class="btn btn-outline" id="tab-월요일" onclick="setNextType('월요일')">월요일</button>
+          <button class="btn btn-outline" id="tab-날짜선택" onclick="pickNextDate()">
+            <span id="tab-날짜선택__label">📅 날짜선택</span>
+          </button>
+          <input type="date" id="nextDateInput" onchange="onNextDateChange(this.value)" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0">
         </div>
       </div>
 
@@ -871,6 +875,7 @@ let 오늘공정 = []
 let 내일공정 = []
 let todayType = '오늘'
 let nextType = '내일'
+let nextCustomDate = ''   // 날짜선택 사용 시 "M/D" 형식 저장
 let 마감임박 = false
 let 남은일정 = []
 let 현장별일정 = {}
@@ -984,9 +989,45 @@ function setTodayType(type) {
 // ── 내일/월요일 ──
 function setNextType(type) {
   nextType = type
+  // 3-way 탭 활성/비활성 처리
   document.getElementById('tab-내일').className = 'btn ' + (type==='내일' ? 'btn-default' : 'btn-outline')
   document.getElementById('tab-월요일').className = 'btn ' + (type==='월요일' ? 'btn-default' : 'btn-outline')
-  document.getElementById('nextHeader').textContent = type + ' 작업 공정'
+  document.getElementById('tab-날짜선택').className = 'btn ' + (type==='날짜선택' ? 'btn-default' : 'btn-outline')
+
+  // 헤더 텍스트
+  if (type === '날짜선택' && nextCustomDate) {
+    document.getElementById('nextHeader').textContent = nextCustomDate + ' 작업 공정'
+  } else if (type === '날짜선택') {
+    document.getElementById('nextHeader').textContent = '날짜 선택 작업 공정'
+  } else {
+    document.getElementById('nextHeader').textContent = type + ' 작업 공정'
+  }
+}
+
+// 날짜선택 버튼 클릭 - hidden date input의 picker 트리거
+function pickNextDate() {
+  const input = document.getElementById('nextDateInput')
+  if (!input) return
+  // 기존에 선택한 값이 있으면 picker가 그 날짜에서 시작
+  if (nextCustomDate) input.value = mdToIso(nextCustomDate)
+  // showPicker 우선, 미지원 시 click fallback
+  if (typeof input.showPicker === 'function') {
+    try { input.showPicker() } catch(e) { input.click() }
+  } else {
+    input.click()
+  }
+}
+
+// 날짜 선택 완료 시
+function onNextDateChange(iso) {
+  if (!iso) return
+  const md = isoToMD(iso)
+  nextCustomDate = md
+  // 버튼 라벨에 선택한 날짜 표시
+  const label = document.getElementById('tab-날짜선택__label')
+  if (label) label.textContent = '📅 ' + md
+  // 활성화
+  setNextType('날짜선택')
 }
 
 // ── 마감임박 ──
@@ -1174,7 +1215,8 @@ function generate() {
   const site = 현장명 || document.getElementById('siteInput').value.trim() || ''
   const note = document.getElementById('note').value.trim() || '금일 특이사항 없습니다.'
 
-  let txt = `안녕하세요! \n[${dateStr}] \n[${site}] 공사 보고드립니다.🙂\n\n■ ${todayLabel} 작업: ${오늘공정.join(', ')  || ''} \n■ ${nextType} 작업: ${내일공정.join(', ') || ''} 예정\n\n* ${note}`
+  const nextLabel = (nextType === '날짜선택' && nextCustomDate) ? nextCustomDate : nextType
+  let txt = `안녕하세요! \n[${dateStr}] \n[${site}] 공사 보고드립니다.🙂\n\n■ ${todayLabel} 작업: ${오늘공정.join(', ')  || ''} \n■ ${nextLabel} 작업: ${내일공정.join(', ') || ''} 예정\n\n* ${note}`
 
   if (마감임박 && 남은일정.length) {
     txt += '\n\n■남은일정 안내'
