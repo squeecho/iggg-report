@@ -214,6 +214,59 @@ body > * { position: relative; z-index: 2; }
   font-weight: 400;
 }
 
+/* ---- Note chips — 자주 쓰는 문구 원클릭 추가 ---- */
+.note-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.note-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  background: transparent;
+  color: var(--fg-mute);
+  border: var(--line-1) dashed var(--line-soft);
+  border-radius: var(--radius-cap);
+  padding: var(--sp-1) var(--sp-3);
+  font-family: var(--ff-body);
+  font-size: var(--fz-mono-l);
+  cursor: pointer;
+  transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
+}
+.note-chip:hover {
+  color: var(--fg);
+  border-color: var(--line);
+  border-style: solid;
+}
+.note-chip--active {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-style: solid;
+  border-color: var(--accent);
+}
+.note-chip--active:hover {
+  color: var(--accent-fg);
+  background: var(--accent);
+  opacity: 0.85;
+}
+.note-chip--active .note-chip__plus {
+  /* 활성 시 + 를 ✓로 보이는 효과: ::before 활용 */
+  display: none;
+}
+.note-chip--active::before {
+  content: "✓";
+  font-family: var(--ff-mono);
+  font-weight: 500;
+  margin-right: var(--sp-1);
+}
+.note-chip__plus {
+  font-family: var(--ff-mono);
+  font-weight: 500;
+  opacity: 0.7;
+}
+
 /* ---- Inputs ---- */
 .input {
   background: var(--bg-input);
@@ -749,7 +802,8 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
       <!-- 특이사항 -->
       <div>
         <label class="label">특이사항 <span class="label__sub">Notes</span></label>
-        <textarea class="input" id="note" placeholder="없음 또는 특이사항 메모">금일 특이사항 없습니다.</textarea>
+        <div class="note-chips" id="noteChips"></div>
+        <textarea class="input" id="note" placeholder="없음 또는 특이사항 메모" oninput="onNoteInput()">금일 특이사항 없습니다.</textarea>
       </div>
 
       <!-- 공사마감 임박 -->
@@ -898,6 +952,82 @@ function saveStorage() {
   localStorage.setItem('공사마감임박', JSON.stringify(마감임박))
   localStorage.setItem('현장별남은일정', JSON.stringify(현장별일정))
   localStorage.setItem('템플릿목록', JSON.stringify(템플릿목록))
+}
+
+// ── 특이사항 칩 ──
+const NOTE_CHIPS = [
+  '인터넷·CCTV·보안은 사전 협의가 필요한 공정입니다. 업체 선정 후 연락처 전달 주시면 일정에 차질 없도록 협의해 드리겠습니다 :)'
+]
+
+// 칩이 textarea에 "있는지" 판단 - 정확/유사 모두 검사
+function isChipActive(chipText, taValue) {
+  if (!taValue) return false
+  // 1. 정확 일치 (가장 흔한 케이스)
+  if (taValue.includes(chipText)) return true
+  // 2. 핵심 키워드 (앞 15자) 라인이 존재하는지
+  const key = chipText.slice(0, 15)
+  return taValue.includes(key)
+}
+
+// 칩 텍스트(또는 핵심 키워드 포함 라인)를 textarea에서 제거
+function removeChipText(chipText, taValue) {
+  // 1. 정확 일치 우선
+  if (taValue.includes(chipText)) {
+    let next = taValue.replace(chipText, '')
+    // 칩 앞뒤 줄바꿈 정리
+    next = next.replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '')
+    return next
+  }
+  // 2. 부분 일치 — 핵심 키워드 포함된 라인을 통째로 제거
+  const key = chipText.slice(0, 15)
+  const lines = taValue.split('\n')
+  const filtered = lines.filter(line => !line.includes(key))
+  return filtered.join('\n').replace(/^\n+|\n+$/g, '')
+}
+
+function renderNoteChips() {
+  const el = document.getElementById('noteChips')
+  if (!el) return
+  if (!NOTE_CHIPS.length) { el.innerHTML = ''; return }
+  const taValue = (document.getElementById('note')?.value || '')
+  el.innerHTML = NOTE_CHIPS.map((txt, i) => {
+    const active = isChipActive(txt, taValue)
+    const dotIdx = txt.indexOf('.')
+    const short = dotIdx > 0 && dotIdx < 40 ? txt.slice(0, dotIdx) : (txt.length > 30 ? txt.slice(0, 30) + '…' : txt)
+    return `<button class="note-chip ${active ? 'note-chip--active' : ''}" onclick="toggleNoteChip(${i})">
+      <span class="note-chip__plus">+</span>
+      <span>${short}</span>
+    </button>`
+  }).join('')
+}
+
+function toggleNoteChip(idx) {
+  const txt = NOTE_CHIPS[idx]
+  if (!txt) return
+  const ta = document.getElementById('note')
+  const cur = ta.value
+  const active = isChipActive(txt, cur)
+
+  if (active) {
+    // 제거
+    let next = removeChipText(txt, cur)
+    // 비어있으면 기본 문구로 복원
+    if (!next.trim()) next = '금일 특이사항 없습니다.'
+    ta.value = next
+    showToast('특이사항에서 제거되었습니다.')
+  } else {
+    // 추가 - 기본 문구만 있거나 비어있으면 교체
+    const trimmed = cur.trim()
+    const isDefault = !trimmed || trimmed === '금일 특이사항 없습니다.'
+    ta.value = isDefault ? txt : (cur.replace(/\s+$/, '') + '\n' + txt)
+    showToast('특이사항에 추가되었습니다.')
+  }
+  renderNoteChips()
+}
+
+// textarea 직접 수정 시 칩 상태 자동 갱신
+function onNoteInput() {
+  renderNoteChips()
 }
 
 // ── 토스트 ──
@@ -1243,6 +1373,7 @@ renderCats('todayCats', 오늘공정, 'toggleToday')
 renderCats('nextCats', 내일공정, 'toggleNext')
 renderScheduleList()
 renderTemplates()
+renderNoteChips()
 updateAutoDate()
 
 if (마감임박) {
