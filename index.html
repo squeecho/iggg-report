@@ -517,6 +517,15 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
   border-radius: var(--radius-md);
 }
 .site-del-btn:hover { color: var(--fg); background: var(--bg-input); }
+/* 현장관리(허브) 연동 현장 배지 — 삭제 버튼 자리 */
+.site-tag-hub {
+  color: var(--fg-mute, var(--fg));
+  opacity: .65;
+  font-size: var(--fz-mono-l);
+  padding: 2px 6px;
+  border: var(--line-1) solid var(--line);
+  border-radius: var(--radius-cap);
+}
 
 /* ---- Checkbox ---- */
 .checkbox-wrap {
@@ -761,6 +770,7 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
           <button class="btn btn-default" onclick="addSite()">추가</button>
         </div>
         <div class="flex-wrap mt2" id="siteList"></div>
+        <p id="hubSyncStatus" class="label__sub" style="display:block;margin:6px 0 0"></p>
       </div>
 
       <!-- 오늘 작업 공정 -->
@@ -1029,6 +1039,7 @@ function toggleNoteChip(idx) {
 // textarea 직접 수정 시 칩 상태 자동 갱신
 function onNoteInput() {
   renderNoteChips()
+  hubQueueSave()
 }
 
 // ── 토스트 ──
@@ -1065,8 +1076,12 @@ function selectSite(name) {
   updateScheduleSubtitle()
   if (document.getElementById('templateSiteName'))
     document.getElementById('templateSiteName').value = 현장명
+  // 현장관리 연동 현장이면 오늘 로그를 불러온다(fail-open)
+  if (허브현장[name]) hubLoadLog(name)
+  else hubSetStatus('')
 }
 function deleteSite(name) {
+  if (허브현장[name]) return showToast('현장관리 연동 현장은 현장관리에서 관리합니다.')
   delete 현장별일정[name]
   현장목록 = 현장목록.filter(x => x !== name)
   if (현장명 === name) { 현장명 = ''; 남은일정 = [] }
@@ -1078,10 +1093,13 @@ function deleteSite(name) {
 function renderSites() {
   const el = document.getElementById('siteList')
   if (!현장목록.length) { el.innerHTML = ''; return }
+  // 현장관리(허브) 유입 현장 = 배지 표시 + 삭제 없음(삭제는 현장관리에서)
   el.innerHTML = 현장목록.map(h => `
     <div class="site-tag">
       <span class="site-tag-name" onclick="selectSite('${escAttrJs(h)}')">${escHtml(h)}</span>
-      <button class="site-del-btn" onclick="deleteSite('${escAttrJs(h)}')">삭제</button>
+      ${허브현장[h]
+        ? '<span class="site-tag-hub" title="현장관리(site.igggstudio.com) 연동 현장">관리</span>'
+        : `<button class="site-del-btn" onclick="deleteSite('${escAttrJs(h)}')">삭제</button>`}
     </div>
   `).join('')
 }
@@ -1104,10 +1122,12 @@ function renderCats(containerId, checkedArr, toggleFn) {
 function toggleToday(item) {
   오늘공정 = 오늘공정.includes(item) ? 오늘공정.filter(x=>x!==item) : [...오늘공정, item]
   renderCats('todayCats', 오늘공정, 'toggleToday')
+  hubQueueSave()
 }
 function toggleNext(item) {
   내일공정 = 내일공정.includes(item) ? 내일공정.filter(x=>x!==item) : [...내일공정, item]
   renderCats('nextCats', 내일공정, 'toggleNext')
+  hubQueueSave()
 }
 
 // ── 오늘/오늘까지 ──
@@ -1170,6 +1190,7 @@ function toggleDeadline() {
     document.getElementById('templateSiteName').value = 현장명
     updateAutoDate()
   }
+  hubQueueSave()
 }
 
 // ── 이스케이프 유틸 — 현장명·템플릿명에 " < > ' 가 들어와도 마크업이 안 깨지게 ──
@@ -1213,6 +1234,7 @@ function updateScheduleSubtitle() {
 function syncScheduleToSite() {
   if (현장명) 현장별일정[현장명] = 남은일정
   saveStorage()
+  hubQueueSave()
 }
 
 // ── 남은일정 ──
@@ -1372,10 +1394,190 @@ function generate() {
   document.getElementById('resultCard').style.display = 'block'
   document.getElementById('resultCard').scrollIntoView({ behavior: 'smooth' })
   showToast('보고서가 생성되었습니다.')
+  hubStamp('reportDoneAt')   // 현장관리 '보고서 확인' 탭에 보고준비완료로 합류
 }
 function copyResult() {
   const txt = document.getElementById('resultBox').textContent
   navigator.clipboard.writeText(txt).then(() => showToast('복사되었습니다.'))
+  hubStamp('copiedAt')       // 현장관리 쪽 '복사완료' 도장과 동일 신호
+}
+
+/* =========================================================
+   현장관리(site.igggstudio.com) 동기화 — iggg-sites Firestore REST
+   - 시공중 현장 목록 자동 유입(허브가 정본, 로컬 전용 이름은 유지)
+   - 오늘 로그(sites/{id}/logs/{YYYY-MM-DD}) 양방향: 현장 선택 시 불러오고,
+     편집은 1.5s 디바운스 PATCH. updateMask 로 이 앱의 필드만 갱신 —
+     허브 내부 필드(costs·extras 실행비용)는 절대 건드리지 않는다.
+   - 보고서 생성=reportDoneAt, 복사=copiedAt 도장 → 허브 '보고서 확인' 합류
+   - 전 구간 fail-open: 오프라인·실패 시 기존 로컬 동작 그대로
+   ========================================================= */
+const HUB_KEY = 'AIzaSyA8U-YmNURLO3M7S6ZlAti_IrDHwvQdrJ8'   // iggg-sites 웹키(형제 앱 공통 공개키)
+const HUB_BASE = 'https://firestore.googleapis.com/v1/projects/iggg-sites/databases/(default)/documents'
+let 허브현장 = {}            // 현장명 → siteId (시공중만)
+let hubTokenP = null
+let hubSaveTimer = null
+
+function hubToken() {
+  if (hubTokenP) return hubTokenP
+  hubTokenP = fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + HUB_KEY, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnSecureToken: true })
+  }).then(r => { if (!r.ok) throw new Error('auth ' + r.status); return r.json() })
+    .then(j => j.idToken)
+    .catch(e => { hubTokenP = null; throw e })
+  return hubTokenP
+}
+// KST 로컬 날짜 키 — 허브 todayStr 과 동일 규칙(UTC 절단 금지)
+function hubTodayKey() {
+  const d = new Date()
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+function hubUnwrap(v) {
+  if (!v) return null
+  if ('stringValue' in v) return v.stringValue
+  if ('integerValue' in v) return Number(v.integerValue)
+  if ('doubleValue' in v) return v.doubleValue
+  if ('booleanValue' in v) return v.booleanValue
+  if ('timestampValue' in v) return v.timestampValue
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(hubUnwrap)
+  if ('mapValue' in v) {
+    const o = {}
+    Object.entries(v.mapValue.fields || {}).forEach(([k, x]) => { o[k] = hubUnwrap(x) })
+    return o
+  }
+  return null
+}
+function hubStrArr(arr) {
+  return { arrayValue: { values: (arr || []).map(s => ({ stringValue: String(s) })) } }
+}
+function hubSetStatus(txt) {
+  const el = document.getElementById('hubSyncStatus')
+  if (el) el.textContent = txt
+}
+
+async function hubFetchSites() {
+  const token = await hubToken()
+  let pageToken = '', out = []
+  do {   // pageToken 순회 필수 — 1회 호출은 300건 초과분이 조용히 절단된다(형제 앱 감사 교훈)
+    const r = await fetch(HUB_BASE + '/sites?pageSize=300' + (pageToken ? '&pageToken=' + pageToken : ''),
+      { headers: { Authorization: 'Bearer ' + token } })
+    if (!r.ok) throw new Error('sites ' + r.status)
+    const j = await r.json()
+    ;(j.documents || []).forEach(doc => {
+      const f = doc.fields || {}
+      out.push({ id: doc.name.split('/').pop(), name: hubUnwrap(f.name) || '',
+                 status: hubUnwrap(f.status) || '', updatedAt: hubUnwrap(f.updatedAt) || '' })
+    })
+    pageToken = j.nextPageToken || ''
+  } while (pageToken)
+  return out
+}
+
+async function hubInit() {
+  try {
+    hubSetStatus('현장관리 연동 중…')
+    const sites = (await hubFetchSites())
+      .filter(s => s.name && s.status === '시공중')
+      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+    허브현장 = {}
+    sites.forEach(s => { if (!허브현장[s.name]) 허브현장[s.name] = s.id })
+    const norm = s => String(s).replace(/\s+/g, '').toLowerCase()   // 스튜디오 관례 정규화
+    const hubNames = Object.keys(허브현장)
+    const hubNorm = new Set(hubNames.map(norm))
+    const localOnly = 현장목록.filter(n => !hubNorm.has(norm(n)))
+    현장목록 = [...hubNames, ...localOnly]
+    saveStorage()
+    renderSites()
+    hubSetStatus('현장관리 연동됨 · 시공중 ' + hubNames.length + '곳')
+    if (현장명 && 허브현장[현장명]) hubLoadLog(현장명)
+  } catch (e) {
+    hubSetStatus('')   // 오프라인/미연결 — 로컬 모드 그대로
+  }
+}
+
+async function hubLoadLog(name) {
+  const id = 허브현장[name]
+  if (!id) return
+  try {
+    const token = await hubToken()
+    const r = await fetch(HUB_BASE + '/sites/' + encodeURIComponent(id) + '/logs/' + hubTodayKey(),
+      { headers: { Authorization: 'Bearer ' + token } })
+    if (r.status === 404) { hubSetStatus('현장관리 연동됨 · 오늘 기록 없음(작성하면 생성)'); return }
+    if (!r.ok) throw new Error('log ' + r.status)
+    const f = (await r.json()).fields || {}
+    if (현장명 !== name) return          // 로드 중 다른 현장으로 바뀜
+    오늘공정 = (hubUnwrap(f.todayWork) || []).filter(Boolean).map(String)
+    내일공정 = (hubUnwrap(f.tomorrowWork) || []).filter(Boolean).map(String)
+    const note = hubUnwrap(f.note)
+    if (note != null) document.getElementById('note').value = note || '금일 특이사항 없습니다.'
+    const remainOn = hubUnwrap(f.remainOn)
+    if (typeof remainOn === 'boolean') {
+      마감임박 = remainOn
+      document.getElementById('deadlineCheck').checked = remainOn
+      document.getElementById('scheduleSection').style.display = remainOn ? 'block' : 'none'
+    }
+    const remaining = hubUnwrap(f.remaining)
+    if (Array.isArray(remaining)) {
+      남은일정 = remaining.filter(x => x && x.work)
+        .map(x => ({ 날짜: isoToMD(String(x.date || '')), 작업: String(x.work) }))
+      현장별일정[name] = 남은일정
+    }
+    renderCats('todayCats', 오늘공정, 'toggleToday')
+    renderCats('nextCats', 내일공정, 'toggleNext')
+    renderNoteChips()
+    renderScheduleList()
+    updateAutoDate()
+    updateScheduleSubtitle()
+    saveStorage()
+    hubSetStatus('현장관리 연동됨 · 오늘 기록 불러옴 ✓')
+  } catch (e) {
+    hubSetStatus('현장관리 연동 오류 — 로컬로 동작')
+  }
+}
+
+function hubQueueSave() {
+  if (!현장명 || !허브현장[현장명]) return
+  clearTimeout(hubSaveTimer)
+  hubSaveTimer = setTimeout(() => hubSaveLog().catch(() => {}), 1500)
+}
+
+async function hubSaveLog(stampField) {
+  const id = 허브현장[현장명]
+  if (!id) return
+  clearTimeout(hubSaveTimer)
+  const token = await hubToken()
+  const fieldNames = ['date', 'todayWork', 'tomorrowWork', 'note', 'remainOn', 'remaining', 'updatedAt']
+  if (stampField) fieldNames.push(stampField)
+  const url = HUB_BASE + '/sites/' + encodeURIComponent(id) + '/logs/' + hubTodayKey() +
+    '?' + fieldNames.map(f => 'updateMask.fieldPaths=' + f).join('&')
+  const nowIso = new Date().toISOString()
+  const body = { fields: {
+    date: { stringValue: hubTodayKey() },
+    todayWork: hubStrArr(오늘공정),
+    tomorrowWork: hubStrArr(내일공정),
+    note: { stringValue: (document.getElementById('note').value || '').trim() },
+    remainOn: { booleanValue: !!마감임박 },
+    remaining: { arrayValue: { values: (남은일정 || []).filter(x => x.작업).map(x => ({
+      mapValue: { fields: { date: { stringValue: mdToIso(x.날짜) },
+                            work: { stringValue: String(x.작업) } } }
+    })) } },
+    updatedAt: { timestampValue: nowIso },
+  } }
+  if (stampField) body.fields[stampField] = { stringValue: nowIso }
+  hubSetStatus('현장관리 저장 중…')
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) { hubSetStatus('현장관리 저장 실패 — 로컬은 유지됨'); throw new Error('save ' + r.status) }
+  hubSetStatus('현장관리 연동됨 · 저장됨 ✓'
+    + (stampField === 'reportDoneAt' ? ' · 보고준비완료' : stampField === 'copiedAt' ? ' · 복사 도장' : ''))
+}
+
+function hubStamp(field) {
+  if (!현장명 || !허브현장[현장명]) return
+  hubSaveLog(field).catch(() => {})
 }
 
 // ── 초기화 ──
@@ -1387,6 +1589,7 @@ renderScheduleList()
 renderTemplates()
 renderNoteChips()
 updateAutoDate()
+hubInit()
 
 if (마감임박) {
   document.getElementById('deadlineCheck').checked = true
