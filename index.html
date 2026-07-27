@@ -1080,8 +1080,8 @@ function renderSites() {
   if (!현장목록.length) { el.innerHTML = ''; return }
   el.innerHTML = 현장목록.map(h => `
     <div class="site-tag">
-      <span class="site-tag-name" onclick="selectSite('${h.replace(/'/g,"\\'")}')">${h}</span>
-      <button class="site-del-btn" onclick="deleteSite('${h.replace(/'/g,"\\'")}')">삭제</button>
+      <span class="site-tag-name" onclick="selectSite('${escAttrJs(h)}')">${escHtml(h)}</span>
+      <button class="site-del-btn" onclick="deleteSite('${escAttrJs(h)}')">삭제</button>
     </div>
   `).join('')
 }
@@ -1172,12 +1172,22 @@ function toggleDeadline() {
   }
 }
 
+// ── 이스케이프 유틸 — 현장명·템플릿명에 " < > ' 가 들어와도 마크업이 안 깨지게 ──
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;')
+}
+// 인라인 onclick 의 JS 문자열 인자용 — JS 이스케이프 후 속성(HTML) 이스케이프
+function escAttrJs(s) {
+  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')
+}
+
 // ── 날짜 유틸 ──
 function get요일(dateStr) {
+  // 생성자에 연·월·일을 한 번에 — setMonth 후 setDate 는 실행일이 29~31일일 때 월 넘침
   const [m, d] = dateStr.split('/').map(Number)
-  const dt = new Date()
-  dt.setMonth(m - 1)
-  dt.setDate(d)
+  const dt = new Date(new Date().getFullYear(), m - 1, d)
   return 요일목록[dt.getDay()]
 }
 function getNextDate() {
@@ -1187,7 +1197,7 @@ function getNextDate() {
   }
   const last = 남은일정[남은일정.length - 1].날짜
   const [m, d] = last.split('/').map(Number)
-  const dt = new Date(); dt.setMonth(m-1); dt.setDate(d); dt.setDate(dt.getDate()+1)
+  const dt = new Date(new Date().getFullYear(), m - 1, d + 1)
   return `${dt.getMonth()+1}/${dt.getDate()}`
 }
 function updateAutoDate() {
@@ -1283,7 +1293,7 @@ function renderScheduleList() {
         onchange="editScheduleDate(${i}, this.value)">
       <span id="day-${i}" class="schedule-item-day">(${get요일(item.날짜)})</span>
       <input class="input schedule-item-work"
-        value="${item.작업.replace(/"/g,'&quot;')}"
+        value="${escHtml(item.작업)}"
         onchange="editScheduleWork(${i}, this.value)">
       <button class="del-btn" onclick="deleteSchedule(${i})">삭제</button>
     </div>
@@ -1329,11 +1339,11 @@ function renderTemplates() {
   el.innerHTML = keys.map(name => `
     <div class="template-item">
       <div style="display:flex;align-items:center;gap:8px;min-width:0;flex:1">
-        <button class="del-btn" onclick="deleteTemplate('${name.replace(/'/g,"\\'")}')">삭제</button>
-        <span style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+        <button class="del-btn" onclick="deleteTemplate('${escAttrJs(name)}')">삭제</button>
+        <span style="font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(name)}</span>
         <span class="mono-s">(${템플릿목록[name].length})</span>
       </div>
-      <button class="template-load-btn" onclick="loadTemplate('${name.replace(/'/g,"\\'")}')">불러오기</button>
+      <button class="template-load-btn" onclick="loadTemplate('${escAttrJs(name)}')">불러오기</button>
     </div>
   `).join('')
 }
@@ -1341,7 +1351,8 @@ function renderTemplates() {
 // ── 보고서 생성 ──
 function generate() {
   const today = new Date()
-  const dateStr = today.toISOString().slice(0,10).replace(/-/g,'.')
+  // 로컬(KST) 기준 — toISOString 은 UTC 라 00:00~08:59 생성 시 하루 전 날짜가 찍힌다
+  const dateStr = `${today.getFullYear()}.${String(today.getMonth()+1).padStart(2,'0')}.${String(today.getDate()).padStart(2,'0')}`
   const todayLabel = todayType === '오늘' ? '오늘' : '오늘까지'
   const site = 현장명 || document.getElementById('siteInput').value.trim() || ''
   const note = document.getElementById('note').value.trim() || '금일 특이사항 없습니다.'
