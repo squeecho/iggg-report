@@ -1428,10 +1428,12 @@ function hubToken() {
   return hubTokenP
 }
 // KST 로컬 날짜 키 — 허브 todayStr 과 동일 규칙(UTC 절단 금지)
-function hubTodayKey() {
+function hubDateKey(offsetDays) {
   const d = new Date()
+  d.setDate(d.getDate() + (offsetDays || 0))
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
 }
+function hubTodayKey() { return hubDateKey(0) }
 function hubUnwrap(v) {
   if (!v) return null
   if ('stringValue' in v) return v.stringValue
@@ -1502,7 +1504,7 @@ async function hubLoadLog(name) {
     const token = await hubToken()
     const r = await fetch(HUB_BASE + '/sites/' + encodeURIComponent(id) + '/logs/' + hubTodayKey(),
       { headers: { Authorization: 'Bearer ' + token } })
-    if (r.status === 404) { hubSetStatus('현장관리 연동됨 · 오늘 기록 없음(작성하면 생성)'); return }
+    if (r.status === 404) { await hubSeedSuggest(name, id, token); return }
     if (!r.ok) throw new Error('log ' + r.status)
     const f = (await r.json()).fields || {}
     if (현장명 !== name) return          // 로드 중 다른 현장으로 바뀜
@@ -1532,6 +1534,80 @@ async function hubLoadLog(name) {
     hubSetStatus('현장관리 연동됨 · 오늘 기록 불러옴 ✓')
   } catch (e) {
     hubSetStatus('현장관리 연동 오류 — 로컬로 동작')
+  }
+}
+
+/* 오늘 로그가 아직 없을 때 — 현장관리 DailyLog 와 **동일한 시드 규칙**으로 제안을
+   채운다(사장 검출 2026-07-28: 허브 화면은 저장 전 메모리 시드를 보여줘 두 화면이
+   달라 보였다). ①직전 로그의 '내일 예정' → 오늘 공정 ②공사일정표(iggg-schedule)
+   해당 날짜 공종 → 빈 칸 보충·내일 공정. 제안일 뿐 저장은 사용자가 만질 때(허브 동일). */
+const SCHED_KEY = 'AIzaSyAks6Jg7KiIOv9rWmAlnXcC8vEnNZvDbDo'   // iggg-schedule 공개 웹키(허브 schedule.js 동일)
+const SCHED_BASE = 'https://firestore.googleapis.com/v1/projects/iggg-schedule/databases/(default)/documents'
+let schedTokenP = null
+function schedToken() {
+  if (schedTokenP) return schedTokenP
+  schedTokenP = fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + SCHED_KEY, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ returnSecureToken: true })
+  }).then(r => { if (!r.ok) throw new Error('sched auth ' + r.status); return r.json() })
+    .then(j => j.idToken)
+    .catch(e => { schedTokenP = null; throw e })
+  return schedTokenP
+}
+async function hubFetchSched(pn) {
+  const t = await schedToken()
+  const r = await fetch(SCHED_BASE + ':runQuery', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'sites' }],
+      where: { fieldFilter: { field: { fieldPath: 'pn' }, op: 'EQUAL', value: { stringValue: pn } } },
+      limit: 1,
+    } }),
+  })
+  if (!r.ok) return null
+  const doc = ((await r.json()) || []).map(x => x.document).filter(Boolean)[0]
+  if (!doc) return null
+  return (hubUnwrap((doc.fields || {}).tasks) || [])
+}
+function hubTasksOn(tasks, day) {   // 허브 tasksOn 동형(분할 구간 포함)
+  const within = (a, b) => a && b && a <= day && day <= b
+  return (tasks || [])
+    .filter(t => t && t.on !== false && (within(t.sd, t.ed) || (t.split === true && within(t.sd2, t.ed2))))
+    .map(t => String(t.name || '')).filter(Boolean)
+}
+async function hubSeedSuggest(name, id, token) {
+  let note = ''
+  try {
+    // ① 직전 로그의 내일 예정 → 오늘 공정
+    const lr = await fetch(HUB_BASE + '/sites/' + encodeURIComponent(id) + '/logs?pageSize=300',
+      { headers: { Authorization: 'Bearer ' + token } })
+    if (lr.ok) {
+      const docs = (await lr.json()).documents || []
+      const todayKey = hubTodayKey()
+      let prev = null
+      docs.forEach(d => {
+        const f = d.fields || {}
+        const dt = String(hubUnwrap(f.date) || d.name.split('/').pop())
+        if (dt < todayKey && (!prev || dt > prev.dt)) prev = { dt, f }
+      })
+      const tw = prev ? (hubUnwrap(prev.f.tomorrowWork) || []).filter(Boolean).map(String) : []
+      if (tw.length) { 오늘공정 = tw; note = prev.dt.replace(/-/g, '.') + ' 내일예정' }
+    }
+    // ② 공사일정표 — 오늘(①이 비었을 때)·내일 보충
+    let tasks = null
+    try { tasks = await hubFetchSched(name) } catch (e) { /* 일정표 미연동 현장 — 무시 */ }
+    if (tasks) {
+      if (!오늘공정.length) { const t = hubTasksOn(tasks, hubTodayKey()); if (t.length) { 오늘공정 = t; note = '공사일정표' } }
+      const tm = hubTasksOn(tasks, hubDateKey(1))
+      if (tm.length) 내일공정 = tm
+    }
+    if (현장명 !== name) return
+    renderCats('todayCats', 오늘공정, 'toggleToday')
+    renderCats('nextCats', 내일공정, 'toggleNext')
+    hubSetStatus('현장관리 연동됨 · 오늘 기록 없음'
+      + (note ? ' · ' + note + ' 자동 채움(수정하세요)' : '(작성하면 생성)'))
+  } catch (e) {
+    hubSetStatus('현장관리 연동됨 · 오늘 기록 없음(작성하면 생성)')
   }
 }
 
