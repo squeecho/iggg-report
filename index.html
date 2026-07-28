@@ -1417,13 +1417,44 @@ let 허브현장 = {}            // 현장명 → siteId (시공중만)
 let hubTokenP = null
 let hubSaveTimer = null
 
+/* 실직원 신원 토큰(보안 웨이브 3, 2026-07-28) — iggg-sites 익명 로그인 대체.
+   iggg-sites 는 로그인 프로젝트(iggg-schedule)와 다른 프로젝트라 idToken 을 그대로
+   못 쓴다: 백엔드가 승인 직원인지 대조하고 커스텀 토큰을 발급한다.
+   iggg_sso 쿠키 → id_token(아래 schedStaffToken) → 커스텀 토큰 → signInWithCustomToken.
+   실패는 던지지 않고 null(호출부가 익명 폴백). */
+const STAFF_API = 'https://iggg-estimate-api-583239150535.asia-northeast3.run.app'
+async function hubStaffToken() {
+  try {
+    const idt = await schedStaffToken()
+    if (!idt) throw new Error('직원 세션 없음')
+    const r = await fetch(STAFF_API + '/api/staff/firestore-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + idt, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'sites' }),
+    })
+    if (!r.ok) throw new Error('firestore-token ' + r.status)
+    const custom = (await r.json()).token
+    if (!custom) throw new Error('커스텀 토큰 없음')
+    const r2 = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=' + HUB_KEY, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: custom, returnSecureToken: true }),
+    })
+    if (!r2.ok) throw new Error('signInWithCustomToken ' + r2.status)
+    return (await r2.json()).idToken || null
+  } catch (e) {
+    console.warn('[hub] 직원 인증 실패 — 익명 폴백:', (e && e.message) || e)
+    return null
+  }
+}
 function hubToken() {
   if (hubTokenP) return hubTokenP
-  hubTokenP = fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + HUB_KEY, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ returnSecureToken: true })
-  }).then(r => { if (!r.ok) throw new Error('auth ' + r.status); return r.json() })
-    .then(j => j.idToken)
+  /* 전환기 폴백: 규칙 잠금 전까지 익명으로도 되고, 잠근 뒤엔 폴백이 자연 실패한다. */
+  hubTokenP = hubStaffToken()
+    .then(t => t || fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + HUB_KEY, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ returnSecureToken: true })
+    }).then(r => { if (!r.ok) throw new Error('auth ' + r.status); return r.json() })
+      .then(j => j.idToken))
     .catch(e => { hubTokenP = null; throw e })
   return hubTokenP
 }
