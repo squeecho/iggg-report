@@ -810,7 +810,7 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
     <div class="hero__meta">
       <span>공사보고 자동화</span>
       <span>v2.0</span>
-      <span>© 2026 IGGG STUDIO</span>
+      <span id="heroCopyright">© 2026 IGGG STUDIO</span>
     </div>
   </header>
 
@@ -946,7 +946,7 @@ textarea.input { resize: none; min-height: 60px; line-height: 1.55; }
   <footer class="footer">
     <span>이견공간 · IGGG STUDIO</span>
     <span>Seoul, Korea</span>
-    <span>©2026</span>
+    <span id="footerCopyright">©2026</span>
   </footer>
 
 </div>
@@ -1027,6 +1027,11 @@ let 마감임박 = false
 let 남은일정 = []
 let 현장별일정 = {}
 let 템플릿목록 = {}
+let 현장별입력 = {}        // 현장명 → {오늘공정, 내일공정, note, todayType, nextType, nextCustomDate}
+let 입력복원중 = false     // 복원 중 저장 재진입 방지
+/* 화면 입력의 출처 — 'local'(로컬 복원, 허브 응답 전 임시) | 'hub' | 'user'.
+   허브 연동 현장은 hubLoadLog/시드가 정본이라 'local' 값은 시드가 덮어쓴다. */
+let 입력출처 = ''
 
 // ── localStorage ──
 function loadStorage() {
@@ -1036,6 +1041,7 @@ function loadStorage() {
     마감임박 = JSON.parse(localStorage.getItem('공사마감임박') || 'false')
     현장별일정 = JSON.parse(localStorage.getItem('현장별남은일정') || '{}')
     템플릿목록 = JSON.parse(localStorage.getItem('템플릿목록') || '{}')
+    현장별입력 = JSON.parse(localStorage.getItem('현장별입력') || '{}')
     if (현장명 && 현장별일정[현장명]) 남은일정 = 현장별일정[현장명]
   } catch(e) {}
 }
@@ -1045,6 +1051,65 @@ function saveStorage() {
   localStorage.setItem('공사마감임박', JSON.stringify(마감임박))
   localStorage.setItem('현장별남은일정', JSON.stringify(현장별일정))
   localStorage.setItem('템플릿목록', JSON.stringify(템플릿목록))
+  localStorage.setItem('현장별입력', JSON.stringify(현장별입력))
+}
+
+/* ── 현장별 입력 영속(오늘/내일 공정·특이사항·탭 상태) ──
+   새로고침에 입력이 통째로 날아가던 문제. 로컬 전용 현장은 완전 영속,
+   허브 연동 현장은 로컬 복원이 "허브 응답 전 임시 표시"이고 허브 응답이 덮어쓴다. */
+function snapshotSiteInputs(name) {
+  if (!name) return
+  현장별입력[name] = {
+    오늘공정: [...오늘공정],
+    내일공정: [...내일공정],
+    note: (document.getElementById('note')?.value ?? ''),
+    todayType, nextType, nextCustomDate,
+  }
+  saveStorage()
+}
+function saveSiteInputs() {
+  if (입력복원중) return          // 복원이 만든 setNextType 등이 되돌려 쓰는 것 방지
+  입력출처 = 'user'
+  snapshotSiteInputs(현장명)
+}
+// 현장 전환/초기 로드 시 화면 복원. clearIfEmpty=true 면 저장분이 없을 때 초기화
+// (이전 현장 값이 남아 다음 현장에 섞이는 것 방지 — 이전 값은 이미 현장별로 저장됨)
+function restoreSiteInputs(name, clearIfEmpty) {
+  const saved = name ? 현장별입력[name] : null
+  입력복원중 = true
+  try {
+    if (!saved) {
+      if (!clearIfEmpty) return false
+      오늘공정 = []
+      내일공정 = []
+      todayType = '오늘'
+      nextType = '내일'
+      nextCustomDate = ''
+      const ta0 = document.getElementById('note')
+      if (ta0) ta0.value = '금일 특이사항 없습니다.'
+    } else {
+      오늘공정 = Array.isArray(saved.오늘공정) ? saved.오늘공정.filter(Boolean).map(String) : []
+      내일공정 = Array.isArray(saved.내일공정) ? saved.내일공정.filter(Boolean).map(String) : []
+      todayType = saved.todayType === '오늘까지' ? '오늘까지' : '오늘'
+      nextType = ['내일','월요일','날짜선택'].includes(saved.nextType) ? saved.nextType : '내일'
+      nextCustomDate = typeof saved.nextCustomDate === 'string' ? saved.nextCustomDate : ''
+      const ta = document.getElementById('note')
+      if (ta && typeof saved.note === 'string') ta.value = saved.note
+    }
+    applyInputUI()
+    입력출처 = 'local'
+    return !!saved
+  } finally { 입력복원중 = false }
+}
+// 상태 → 화면(공정 칩·특이사항 칩·탭)
+function applyInputUI() {
+  renderCats('todayCats', 오늘공정, 'toggleToday')
+  renderCats('nextCats', 내일공정, 'toggleNext')
+  renderNoteChips()
+  const label = document.getElementById('tab-날짜선택__label')
+  if (label) label.textContent = nextCustomDate ? '📅 ' + nextCustomDate : '📅 날짜선택'
+  setTodayType(todayType)
+  setNextType(nextType)
 }
 
 // ── 특이사항 칩 ──
@@ -1116,11 +1181,13 @@ function toggleNoteChip(idx) {
     showToast('특이사항에 추가되었습니다.')
   }
   renderNoteChips()
+  saveSiteInputs()
 }
 
 // textarea 직접 수정 시 칩 상태 자동 갱신
 function onNoteInput() {
   renderNoteChips()
+  saveSiteInputs()
   hubQueueSave()
 }
 
@@ -1142,15 +1209,20 @@ function addSite() {
   현장목록.unshift(val)
   현장명 = val
   document.getElementById('siteInput').value = ''
+  // 공정을 먼저 채우고 현장명을 나중에 추가하는 흐름 — 화면 값을 새 현장에 귀속시킨다
+  snapshotSiteInputs(val)
   saveStorage()
   renderSites()
   syncScheduleToSite()
   showToast('현장명이 추가되었습니다.')
 }
 function selectSite(name) {
+  const 이전현장 = 현장명
   현장명 = name
   document.getElementById('siteInput').value = name
   남은일정 = 현장별일정[현장명] ? [...현장별일정[현장명]] : []
+  // 로컬 입력 복원(허브 연동 현장은 아래 hubLoadLog 응답이 덮어쓴다)
+  restoreSiteInputs(name, !!이전현장 && 이전현장 !== name)
   saveStorage()
   renderSites()
   renderScheduleList()
@@ -1165,11 +1237,14 @@ function selectSite(name) {
 function deleteSite(name) {
   if (허브현장[name]) return showToast('현장관리 연동 현장은 현장관리에서 관리합니다.')
   delete 현장별일정[name]
+  delete 템플릿목록[name]      // 현장명=템플릿 키 — 현장이 사라지면 템플릿도 고아가 된다
+  delete 현장별입력[name]
   현장목록 = 현장목록.filter(x => x !== name)
   if (현장명 === name) { 현장명 = ''; 남은일정 = [] }
   saveStorage()
   renderSites()
   renderScheduleList()
+  renderTemplates()
   showToast('현장명이 삭제되었습니다.')
 }
 function renderSites() {
@@ -1204,11 +1279,13 @@ function renderCats(containerId, checkedArr, toggleFn) {
 function toggleToday(item) {
   오늘공정 = 오늘공정.includes(item) ? 오늘공정.filter(x=>x!==item) : [...오늘공정, item]
   renderCats('todayCats', 오늘공정, 'toggleToday')
+  saveSiteInputs()
   hubQueueSave()
 }
 function toggleNext(item) {
   내일공정 = 내일공정.includes(item) ? 내일공정.filter(x=>x!==item) : [...내일공정, item]
   renderCats('nextCats', 내일공정, 'toggleNext')
+  saveSiteInputs()
   hubQueueSave()
 }
 
@@ -1217,6 +1294,7 @@ function setTodayType(type) {
   todayType = type
   document.getElementById('tab-오늘').className = 'btn ' + (type==='오늘' ? 'btn-default' : 'btn-outline')
   document.getElementById('tab-오늘까지').className = 'btn ' + (type==='오늘까지' ? 'btn-default' : 'btn-outline')
+  saveSiteInputs()
 }
 
 // ── 내일/월요일 ──
@@ -1235,6 +1313,7 @@ function setNextType(type) {
   } else {
     document.getElementById('nextHeader').textContent = type + ' 작업 공정'
   }
+  saveSiteInputs()
 }
 
 // 날짜선택 버튼 클릭 - hidden date input의 picker 트리거
@@ -1287,10 +1366,25 @@ function escAttrJs(s) {
 }
 
 // ── 날짜 유틸 ──
+/* 이 앱의 날짜는 연도 없는 "M/D" 다 — 연말연초에 연도를 현재 연도로 못 박으면
+   12월에 적는 1월 일정이 올해 1월(과거)로, 1월에 보는 12월 일정이 올해 12월(미래)로
+   뒤집힌다. 롤링 윈도우로 추론: 대상 월이 (현재월-6) 보다 작으면 내년,
+   (현재월+6) 보다 크면 작년. ±6개월 이내(같은 해 범위)는 기존 동작 그대로.
+   base 는 테스트/재현용 기준일(생략 시 오늘). */
+function mdYear(m, base) {
+  const now = (base instanceof Date && !isNaN(base)) ? base : new Date()
+  const y = now.getFullYear()
+  const cur = now.getMonth() + 1
+  const mm = Number(m)
+  if (!mm) return y
+  if (mm < cur - 6) return y + 1
+  if (mm > cur + 6) return y - 1
+  return y
+}
 function get요일(dateStr) {
   // 생성자에 연·월·일을 한 번에 — setMonth 후 setDate 는 실행일이 29~31일일 때 월 넘침
   const [m, d] = dateStr.split('/').map(Number)
-  const dt = new Date(new Date().getFullYear(), m - 1, d)
+  const dt = new Date(mdYear(m), m - 1, d)
   return 요일목록[dt.getDay()]
 }
 function getNextDate() {
@@ -1300,7 +1394,7 @@ function getNextDate() {
   }
   const last = 남은일정[남은일정.length - 1].날짜
   const [m, d] = last.split('/').map(Number)
-  const dt = new Date(new Date().getFullYear(), m - 1, d + 1)
+  const dt = new Date(mdYear(m), m - 1, d + 1)
   return `${dt.getMonth()+1}/${dt.getDate()}`
 }
 function updateAutoDate() {
@@ -1346,12 +1440,12 @@ function isoToMD(iso) {
   return `${Number(parts[1])}/${Number(parts[2])}`
 }
 
-// "5/2" → "2026-05-02" (현재 연도 기준)
+// "5/2" → "2026-05-02" (연도는 mdYear 롤링 추론 — 연말연초 뒤집힘 방지)
 function mdToIso(md) {
   if (!md || !md.includes('/')) return ''
   const [m, d] = md.split('/').map(Number)
   if (!m || !d) return ''
-  const y = new Date().getFullYear()
+  const y = mdYear(m)
   return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`
 }
 
@@ -1643,6 +1737,8 @@ async function hubLoadLog(name) {
     renderScheduleList()
     updateAutoDate()
     updateScheduleSubtitle()
+    입력출처 = 'hub'          // 허브가 정본 — 로컬 복원본은 여기서 대체됐다
+    snapshotSiteInputs(name)  // 오프라인 재방문 시 마지막 허브 상태를 보여주기 위한 미러
     saveStorage()
     hubSetStatus('현장관리 연동됨 · 오늘 기록 불러옴 ✓')
   } catch (e) {
@@ -1739,11 +1835,15 @@ async function hubSeedSuggest(name, id, token) {
     let tasks = null
     try { tasks = await hubFetchSched(name) } catch (e) { /* 일정표 미연동 현장 — 무시 */ }
     if (tasks) {
-      if (!오늘공정.length) { const t = hubTasksOn(tasks, hubTodayKey()); if (t.length) { 오늘공정 = t; note = '공사일정표' } }
+      // 로컬 복원본('local')은 허브 응답 전 임시 표시 — 시드가 정본이라 비어있는 것으로 취급
+      if (!오늘공정.length || 입력출처 === 'local') {
+        const t = hubTasksOn(tasks, hubTodayKey()); if (t.length) { 오늘공정 = t; note = '공사일정표' }
+      }
       const tm = hubTasksOn(tasks, hubDateKey(1))
       if (tm.length) 내일공정 = tm
     }
     if (현장명 !== name) return
+    if (note) 입력출처 = 'hub'   // 시드가 화면을 채웠다
     renderCats('todayCats', 오늘공정, 'toggleToday')
     renderCats('nextCats', 내일공정, 'toggleNext')
     hubSetStatus('현장관리 연동됨 · 오늘 기록 없음'
@@ -1800,6 +1900,8 @@ function hubStamp(field) {
 
 // ── 초기화 ──
 loadStorage()
+// 저장된 현장의 입력(공정·특이사항·탭) 복원 — 허브 연동 현장이면 아래 hubInit 응답이 덮어쓴다
+restoreSiteInputs(현장명, false)
 renderSites()
 renderCats('todayCats', 오늘공정, 'toggleToday')
 renderCats('nextCats', 내일공정, 'toggleNext')
@@ -1807,6 +1909,14 @@ renderScheduleList()
 renderTemplates()
 renderNoteChips()
 updateAutoDate()
+// 저작권 연도 — 하드코딩 금지(해가 바뀌면 자동)
+;(function initCopyrightYear(){
+  const y = new Date().getFullYear()
+  const hero = document.getElementById('heroCopyright')
+  if (hero) hero.textContent = '© ' + y + ' IGGG STUDIO'
+  const foot = document.getElementById('footerCopyright')
+  if (foot) foot.textContent = '©' + y
+})()
 hubInit()
 
 if (마감임박) {
