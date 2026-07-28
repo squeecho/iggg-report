@@ -1543,14 +1543,43 @@ async function hubLoadLog(name) {
    해당 날짜 공종 → 빈 칸 보충·내일 공정. 제안일 뿐 저장은 사용자가 만질 때(허브 동일). */
 const SCHED_KEY = 'AIzaSyAks6Jg7KiIOv9rWmAlnXcC8vEnNZvDbDo'   // iggg-schedule 공개 웹키(허브 schedule.js 동일)
 const SCHED_BASE = 'https://firestore.googleapis.com/v1/projects/iggg-schedule/databases/(default)/documents'
+/* iggg_sso 쿠키(.igggstudio.com 공용, {email, refreshToken}) — ig works 로그인이 심는다. */
+function ssoRefreshToken() {
+  try {
+    const m = document.cookie.match(/(?:^|; )iggg_sso=([^;]*)/)
+    if (!m) return ''
+    return (JSON.parse(decodeURIComponent(m[1]) || 'null') || {}).refreshToken || ''
+  } catch (e) { return '' }
+}
+/* 실직원 신원 토큰(보안 웨이브 2, 2026-07-28) — refreshToken → id_token 교환.
+   실패는 던지지 않고 null 로 알린다(호출부가 익명으로 폴백). */
+async function schedStaffToken() {
+  try {
+    const rt = ssoRefreshToken()
+    if (!rt) throw new Error('iggg_sso 쿠키 없음')
+    const r = await fetch('https://securetoken.googleapis.com/v1/token?key=' + SCHED_KEY, {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(rt),
+    })
+    if (!r.ok) throw new Error('securetoken ' + r.status)
+    const j = await r.json()
+    if (!j.id_token) throw new Error('id_token 없음')
+    return j.id_token
+  } catch (e) {
+    console.warn('[sched] 직원 인증 실패 — 익명 폴백:', (e && e.message) || e)
+    return null
+  }
+}
 let schedTokenP = null
 function schedToken() {
   if (schedTokenP) return schedTokenP
-  schedTokenP = fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + SCHED_KEY, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ returnSecureToken: true })
-  }).then(r => { if (!r.ok) throw new Error('sched auth ' + r.status); return r.json() })
-    .then(j => j.idToken)
+  /* 전환기 폴백: 규칙 잠금 전까지 익명으로도 읽히고, 잠근 뒤엔 폴백이 자연 실패한다. */
+  schedTokenP = schedStaffToken()
+    .then(t => t || fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + SCHED_KEY, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ returnSecureToken: true })
+    }).then(r => { if (!r.ok) throw new Error('sched auth ' + r.status); return r.json() })
+      .then(j => j.idToken))
     .catch(e => { schedTokenP = null; throw e })
   return schedTokenP
 }
