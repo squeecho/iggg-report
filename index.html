@@ -1236,6 +1236,9 @@ function selectSite(name) {
 }
 function deleteSite(name) {
   if (허브현장[name]) return showToast('현장관리 연동 현장은 현장관리에서 관리합니다.')
+  /* ⚠확인 없이 즉시 실행 + 템플릿·일정·저장 입력이 연쇄 삭제됐다(감사 2026-07-30).
+     오탭 한 번에 현장 데이터가 전소되고 되돌리기가 없다. */
+  if (!confirm(`"${name}" 현장을 삭제할까요?\n일정·템플릿·입력값이 함께 지워지고 되돌릴 수 없습니다.`)) return
   delete 현장별일정[name]
   delete 템플릿목록[name]      // 현장명=템플릿 키 — 현장이 사라지면 템플릿도 고아가 된다
   delete 현장별입력[name]
@@ -1458,6 +1461,9 @@ function syncCustomDate() {
   else wrap.classList.remove('has-value')
 }
 function deleteSchedule(idx) {
+  const _s = 남은일정[idx]
+  const _nm = (_s && (_s.name || _s.공정 || _s.title)) || '이 일정'
+  if (!confirm(`${_nm} 을(를) 삭제할까요?`)) return
   남은일정.splice(idx, 1)
   syncScheduleToSite()
   renderScheduleList()
@@ -1522,6 +1528,7 @@ function loadTemplate(name) {
   showToast(`"${name}" 템플릿을 불러왔습니다.`)
 }
 function deleteTemplate(name) {
+  if (!confirm(`"${name}" 템플릿을 삭제할까요?\n되돌릴 수 없습니다.`)) return
   delete 템플릿목록[name]
   saveStorage()
   renderTemplates()
