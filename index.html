@@ -1520,6 +1520,12 @@ function loadTemplate(name) {
   if (!현장명) return showToast('현장을 먼저 선택해주세요.')
   const tmpl = 템플릿목록[name]
   if (!tmpl) return showToast('템플릿을 찾을 수 없습니다.')
+  // ⚠불러오기는 **현재 일정을 통째로 덮어쓴다**. 확인이 없고 삭제 버튼이 바로
+  //   옆이라 작성 중이던 일정이 확인 없이 전멸했다(감사 2026-07-29 #150).
+  //   작업 중일 때만 묻는다 — 빈 화면에서까지 물으면 읽지 않고 누르는 습관이 든다.
+  if (남은일정.length && !confirm(
+      `'${name}' 템플릿을 불러오면 지금 작성 중인 일정 ${남은일정.length}건이 모두 사라집니다. 계속할까요?`))
+    return
   const today = new Date()
   남은일정 = tmpl.map((item, i) => {
     const d = new Date(today); d.setDate(today.getDate() + i)
